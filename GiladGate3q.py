@@ -160,14 +160,96 @@ class rhoResult(object):
         popt, pcov = curve_fit(func, t[:points], v[:points], p0)
         return popt
 
-def exper(data=params(),eflag=True,cflag=True,time=None,steps=5000):
-    c_op_list = []
-    if eflag:
-        c_op_list.append(data.Ld())
-    if cflag:
-        c_op_list.append(data.Lec())
+def exper(data=params(), time=None,steps=500):
     if not time:
         time = 10*2*pi/(data.g**2/data.delta)
+    return newMethod(data,time,steps)
+    if data.gec == 0:
+        return noCorrections(data,time,steps)
+    elif 1/data.gec > time/steps:
+        return sparseCorrections(data,time,steps)
+    else:
+        return frequentCorrections(data,time,steps)
+
+def noCorrections(data,time,steps):
+    print 'yo'
+    sup = -1j*(spre(data.Ht()) - spost(data.Ht())) + data.Ld()
     timelist = linspace(0,time,steps)
-    out = mesolve(data.Ht(),data.rho0(),timelist,c_op_list,[])
-    return rhoResult(data,out.states,timelist)
+    delta = timelist[1]
+    prop = (delta*sup).expm()
+    oplist = [prop**i for i in range(steps)]
+    rholist = [operate(op,data.rho0()) for op in oplist]
+    return rhoResult(data,rholist,timelist)
+
+# A fast method, assumes frequent corrections, times are in multiples
+# of the times between corrections
+def frequentCorrections(data,time,steps):
+    sup = -1j*(spre(data.Ht()) - spost(data.Ht())) + data.Ld()
+
+    dt = 1/data.gec
+    corr = data.correct()
+    prop = (dt*sup).expm()
+    expo = int(time/steps/dt)
+    propcorr = (corr*prop)**expo
+    
+    t = 0
+    timelist = [t]
+
+    rho = data.rho0()
+    rholist = [rho]
+    
+
+    for i in range(steps):
+        rho = operate(propcorr,rho)
+        t += expo*dt
+        rholist.append(rho)
+        timelist.append(t)
+    return rhoResult(data,rholist,timelist)
+    
+
+# A slow method that is required if the corrections are very sparse
+def sparseCorrections(data,time,steps):
+    sup = -1j*(spre(data.Ht()) - spost(data.Ht())) + data.Ld()
+    # time between corrections    
+    dt = 1/data.gec
+    # time propagation between corrections
+    prop = (dt*sup).expm()
+    # number of corrections
+    corrcount = int(time/dt)
+    # time evolution operator up to i'th correction (+1 for 0)
+    corr = data.correct()
+    corrsteps = [(corr*prop)**i for i in range(corrcount+1)]
+    # if there is more time after final correction,
+    # Add the propagation and correction for it
+    delta = time-(corrcount*dt)
+    if delta>0:
+        corrcount += 1
+        corrsteps.append(corr*(delta*sup).expm()*corrsteps[-1])
+    timelist = linspace(0,time,steps)
+    oplist = []
+    # For each time tick, calculate propagation from last correction
+    for t in timelist:
+        pos = int(t/dt)
+        delta = t-(pos*dt)
+        oplist.append((delta*sup).expm()*corrsteps[pos])
+    # finally operate with all prop. ops. on the initial rho
+    rholist = [operate(op,data.rho0()) for op in oplist]
+    return rhoResult(data,rholist,timelist)
+
+def newMethod(data,time,steps):
+    sup = -1j*(spre(data.Ht()) - spost(data.Ht())) + data.Ld()
+    if data.gec==0:
+        dt = time+1
+    else:
+        dt = 1/data.gec
+    prop = (dt*sup).expm()
+    propcorr = data.correct()*prop
+    timelist = linspace(0,time,steps)
+    oplist = []
+    for t in timelist:
+        count = int(t/dt)
+        delta = t - count*dt
+        oplist.append((delta*sup).expm()*(propcorr**count))
+        print count
+    rholist = [operate(op,data.rho0()) for op in oplist]    
+    return rhoResult(data,rholist,timelist)
